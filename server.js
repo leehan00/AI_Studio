@@ -3,8 +3,8 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const Database = require("better-sqlite3");
 const bcrypt = require("bcryptjs");
+const { data: db, save } = require("./store");
 
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
@@ -14,84 +14,25 @@ const host = process.env.HOST || "0.0.0.0";
 const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const BODY_LIMIT = 1 * 1024 * 1024; // 1 MB
 
-// ── Database ──────────────────────────────────────────────────────────────────
-const db = new Database(path.join(__dirname, "openplanner.db"));
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id             TEXT    PRIMARY KEY,
-    username       TEXT    UNIQUE NOT NULL,
-    password_hash  TEXT    NOT NULL,
-    region         TEXT    NOT NULL DEFAULT '',
-    preferred_food TEXT    NOT NULL DEFAULT '',
-    workplace      TEXT    NOT NULL DEFAULT '',
-    created_at     INTEGER NOT NULL
-  )
-`);
-// 기존 DB 마이그레이션
-for (const col of ["preferred_food TEXT NOT NULL DEFAULT ''", "workplace TEXT NOT NULL DEFAULT ''"]) {
-  try { db.exec(`ALTER TABLE users ADD COLUMN ${col}`); } catch {}
-}
-
-// 일정 저장 테이블
-db.exec(`
-  CREATE TABLE IF NOT EXISTS schedules (
-    id         TEXT    PRIMARY KEY,
-    user_id    TEXT    NOT NULL,
-    title      TEXT    NOT NULL,
-    date       TEXT    NOT NULL,
-    end_date   TEXT    NOT NULL DEFAULT '',
-    start_hour REAL    NOT NULL,
-    end_hour   REAL    NOT NULL,
-    private    INTEGER NOT NULL DEFAULT 0,
-    category   TEXT    NOT NULL DEFAULT '기타',
-    repeat     TEXT    NOT NULL DEFAULT 'none',
-    created_at INTEGER NOT NULL
-  )
-`);
-
-// 방 코드를 서버에 저장해 다른 기기에서도 초대코드로 입장 가능
-db.exec(`
-  CREATE TABLE IF NOT EXISTS rooms (
-    code       TEXT    PRIMARY KEY,
-    name       TEXT    NOT NULL,
-    host_id    TEXT    NOT NULL,
-    created_at INTEGER NOT NULL
-  )
-`);
-
-// 방 참여자 (서버에 저장해 방장·참여자가 같은 멤버 목록을 봄)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS room_members (
-    code      TEXT    NOT NULL,
-    user_id   TEXT    NOT NULL,
-    joined_at INTEGER NOT NULL,
-    ready     INTEGER NOT NULL DEFAULT 0,
-    pref_menu  TEXT   NOT NULL DEFAULT '',
-    pref_avoid TEXT   NOT NULL DEFAULT '',
-    pref_place TEXT   NOT NULL DEFAULT '',
-    pref_mood  TEXT   NOT NULL DEFAULT '',
-    PRIMARY KEY (code, user_id)
-  )
-`);
-// 마이그레이션 (기존 방 멤버 테이블에 컬럼 추가)
-for (const col of [
-  "ready INTEGER NOT NULL DEFAULT 0",
-  "pref_menu TEXT NOT NULL DEFAULT ''",
-  "pref_avoid TEXT NOT NULL DEFAULT ''",
-  "pref_place TEXT NOT NULL DEFAULT ''",
-  "pref_mood TEXT NOT NULL DEFAULT ''",
-]) { try { db.exec(`ALTER TABLE room_members ADD COLUMN ${col}`); } catch {} }
-try { db.exec("ALTER TABLE rooms ADD COLUMN decision TEXT NOT NULL DEFAULT ''"); } catch {}
+// ── Data helpers (순수 JS 저장소 store.js 사용) ────────────────────────────────
+const findUserByName = (name) => db.users.find((u) => u.username === name);
+const findUserById = (id) => db.users.find((u) => u.id === id);
+const findRoom = (code) => db.rooms.find((r) => r.code === code);
+const roomMembersOf = (code) =>
+  db.roomMembers.filter((m) => m.code === code).sort((a, b) => a.joined_at - b.joined_at);
+const schedulesOf = (userId) =>
+  db.schedules.filter((s) => s.user_id === userId)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.start_hour - b.start_hour);
 
 // 오래된 방·멤버 정리 (24시간 이상 지난 방 삭제) — 시작 시 + 1시간마다
 function cleanupOldRooms() {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  const stale = db.prepare("SELECT code FROM rooms WHERE created_at < ?").all(cutoff);
-  for (const r of stale) {
-    db.prepare("DELETE FROM room_members WHERE code = ?").run(r.code);
-    db.prepare("DELETE FROM rooms WHERE code = ?").run(r.code);
-  }
-  if (stale.length) console.log(`[cleanup] 오래된 방 ${stale.length}개 정리`);
+  const stale = db.rooms.filter((r) => r.created_at < cutoff).map((r) => r.code);
+  if (!stale.length) return;
+  db.rooms = db.rooms.filter((r) => !stale.includes(r.code));
+  db.roomMembers = db.roomMembers.filter((m) => !stale.includes(m.code));
+  save();
+  console.log(`[cleanup] 오래된 방 ${stale.length}개 정리`);
 }
 cleanupOldRooms();
 setInterval(cleanupOldRooms, 60 * 60 * 1000).unref();
@@ -174,17 +115,18 @@ async function handleRegister(req, res) {
   }
 
   const uname = username.trim();
-  const existing = db.prepare("SELECT id FROM users WHERE username = ?").get(uname);
-  if (existing) {
+  if (findUserByName(uname)) {
     return sendJson(res, 409, { error: "이미 사용 중인 이름입니다." });
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
   const id = crypto.randomBytes(16).toString("hex");
 
-  db.prepare(
-    "INSERT INTO users (id, username, password_hash, region, preferred_food, workplace, created_at) VALUES (?, ?, ?, '', '', '', ?)"
-  ).run(id, uname, passwordHash, Date.now());
+  db.users.push({
+    id, username: uname, password_hash: passwordHash,
+    region: "", preferred_food: "", workplace: "", created_at: Date.now(),
+  });
+  save();
 
   const newUser = { id, username: uname, region: "", preferred_food: "", workplace: "" };
   const token = createSession(newUser);
@@ -205,7 +147,7 @@ async function handleLogin(req, res) {
     return sendJson(res, 400, { error: "이름과 비밀번호를 입력해주세요." });
   }
 
-  const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username);
+  const user = findUserByName(username);
 
   const dummyHash = "$2a$12$invalidhashfortimingprotection00000000000000000000000000";
   const ok = user ? await bcrypt.compare(password, user.password_hash)
@@ -231,9 +173,8 @@ async function handleUpdateProfile(req, res) {
   const preferred_food = (body.preferred_food ?? "").trim();
   const workplace = (body.workplace ?? "").trim();
 
-  db.prepare(
-    "UPDATE users SET region = ?, preferred_food = ?, workplace = ? WHERE id = ?"
-  ).run(region, preferred_food, workplace, session.id);
+  const user = findUserById(session.id);
+  if (user) { Object.assign(user, { region, preferred_food, workplace }); save(); }
 
   const updated = { ...session, region, preferred_food, workplace };
   sessions.set(token, updated);
@@ -244,10 +185,7 @@ function handleGetSchedules(req, res) {
   const token = req.headers.authorization?.replace("Bearer ", "");
   const session = getSession(token);
   if (!session) return sendJson(res, 401, { error: "로그인이 필요합니다." });
-  const schedules = db.prepare(
-    "SELECT * FROM schedules WHERE user_id = ? ORDER BY date, start_hour"
-  ).all(session.id);
-  sendJson(res, 200, { schedules });
+  sendJson(res, 200, { schedules: schedulesOf(session.id) });
 }
 
 async function handleAddSchedule(req, res) {
@@ -257,11 +195,15 @@ async function handleAddSchedule(req, res) {
   let body;
   try { body = await readBody(req); } catch (e) { return sendJson(res, 400, { error: e.message }); }
   const id = crypto.randomBytes(8).toString("hex");
-  db.prepare(
-    "INSERT INTO schedules (id, user_id, title, date, end_date, start_hour, end_hour, private, category, repeat, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(id, session.id, body.title, body.date, body.end_date || body.date,
-        body.start_hour, body.end_hour, body.private ? 1 : 0,
-        body.category || "기타", body.repeat || "none", Date.now());
+  db.schedules.push({
+    id, user_id: session.id, title: body.title,
+    date: body.date, end_date: body.end_date || body.date,
+    start_hour: body.start_hour, end_hour: body.end_hour,
+    private: body.private ? 1 : 0,
+    category: body.category || "기타", repeat: body.repeat || "none",
+    created_at: Date.now(),
+  });
+  save();
   sendJson(res, 201, { id });
 }
 
@@ -270,44 +212,41 @@ function handleDeleteSchedule(req, res) {
   const session = getSession(token);
   if (!session) return sendJson(res, 401, { error: "로그인이 필요합니다." });
   const scheduleId = req.url.replace("/api/schedules/", "");
-  db.prepare("DELETE FROM schedules WHERE id = ? AND user_id = ?").run(scheduleId, session.id);
+  db.schedules = db.schedules.filter((s) => !(s.id === scheduleId && s.user_id === session.id));
+  save();
   sendJson(res, 200, { ok: true });
 }
 
 // 방 멤버 목록을 프로필·일정과 함께 조립 (requesterId 본인 선호만 포함 — 개인정보 보호)
 function buildRoomPayload(room, requesterId = null) {
-  const members = db.prepare(`
-    SELECT u.id, u.username, u.region, u.preferred_food, u.workplace,
-           m.joined_at, m.ready, m.pref_menu, m.pref_avoid, m.pref_place, m.pref_mood
-    FROM room_members m JOIN users u ON u.id = m.user_id
-    WHERE m.code = ? ORDER BY m.joined_at
-  `).all(room.code);
+  const members = roomMembersOf(room.code);
 
-  const getSchedules = db.prepare("SELECT * FROM schedules WHERE user_id = ? ORDER BY date, start_hour");
-
-  const memberData = members.map((u) => ({
-    id: u.id,
-    name: u.username,
-    region: u.region,
-    role: u.id === room.host_id ? "주최자" : "참여자",
-    ready: !!u.ready,
-    // 선호는 본인 것만 노출
-    preference: u.id === requesterId
-      ? { menu: u.pref_menu, avoid: u.pref_avoid, place: u.pref_place, mood: u.pref_mood }
-      : null,
-    profile: { preferred_food: u.preferred_food, workplace: u.workplace, region: u.region },
-    schedules: getSchedules.all(u.id).map((s) => {
-      const isMine = u.id === requesterId;
-      const isPrivate = !!s.private;
-      // 남의 비공개 일정은 제목을 노출하지 않음 (충돌 계산엔 시간만 필요)
-      return {
-        date: s.date, endDate: s.end_date || s.date,
-        title: (isPrivate && !isMine) ? "바쁨" : s.title,
-        start: s.start_hour, end: s.end_hour, private: isPrivate,
-        category: (isPrivate && !isMine) ? "기타" : s.category, repeat: s.repeat,
-      };
-    }),
-  }));
+  const memberData = members.map((m) => {
+    const u = findUserById(m.user_id) ?? { username: "(탈퇴)", region: "", preferred_food: "", workplace: "" };
+    const isMine = m.user_id === requesterId;
+    return {
+      id: m.user_id,
+      name: u.username,
+      region: u.region,
+      role: m.user_id === room.host_id ? "주최자" : "참여자",
+      ready: !!m.ready,
+      // 선호는 본인 것만 노출
+      preference: isMine
+        ? { menu: m.pref_menu || "", avoid: m.pref_avoid || "", place: m.pref_place || "", mood: m.pref_mood || "" }
+        : null,
+      profile: { preferred_food: u.preferred_food, workplace: u.workplace, region: u.region },
+      schedules: schedulesOf(m.user_id).map((s) => {
+        const isPrivate = !!s.private;
+        // 남의 비공개 일정은 제목을 노출하지 않음 (충돌 계산엔 시간만 필요)
+        return {
+          date: s.date, endDate: s.end_date || s.date,
+          title: (isPrivate && !isMine) ? "바쁨" : s.title,
+          start: s.start_hour, end: s.end_hour, private: isPrivate,
+          category: (isPrivate && !isMine) ? "기타" : s.category, repeat: s.repeat,
+        };
+      }),
+    };
+  });
 
   let decision = null;
   if (room.decision) { try { decision = JSON.parse(room.decision); } catch {} }
@@ -316,6 +255,20 @@ function buildRoomPayload(room, requesterId = null) {
     code: room.code, name: room.name, hostId: room.host_id,
     members: memberData, decision,
   };
+}
+
+// 멤버 추가(중복 무시) / 결정 초기화 헬퍼
+function addMember(code, userId) {
+  if (!db.roomMembers.some((m) => m.code === code && m.user_id === userId)) {
+    db.roomMembers.push({
+      code, user_id: userId, joined_at: Date.now(), ready: 0,
+      pref_menu: "", pref_avoid: "", pref_place: "", pref_mood: "",
+    });
+  }
+}
+function clearDecision(code) {
+  const room = findRoom(code);
+  if (room) room.decision = "";
 }
 
 async function handleCreateRoom(req, res) {
@@ -329,13 +282,11 @@ async function handleCreateRoom(req, res) {
   const name = (body.name ?? "새 약속").trim() || "새 약속";
   const code = `OP-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 
-  db.prepare("INSERT OR REPLACE INTO rooms (code, name, host_id, created_at) VALUES (?, ?, ?, ?)")
-    .run(code, name, session.id, Date.now());
-  // 방장을 첫 멤버로 등록
-  db.prepare("INSERT OR REPLACE INTO room_members (code, user_id, joined_at) VALUES (?, ?, ?)")
-    .run(code, session.id, Date.now());
+  const room = { code, name, host_id: session.id, created_at: Date.now(), decision: "" };
+  db.rooms.push(room);
+  addMember(code, session.id); // 방장을 첫 멤버로 등록
+  save();
 
-  const room = db.prepare("SELECT * FROM rooms WHERE code = ?").get(code);
   sendJson(res, 201, buildRoomPayload(room, session.id));
 }
 
@@ -350,23 +301,21 @@ async function handleJoinRoom(req, res) {
   const code = (body.code ?? "").trim().toUpperCase();
   if (!code) return sendJson(res, 400, { error: "초대코드가 필요합니다." });
 
-  const room = db.prepare("SELECT * FROM rooms WHERE code = ?").get(code);
+  const room = findRoom(code);
   if (!room) return sendJson(res, 404, { error: "초대코드가 올바르지 않습니다." });
 
-  db.prepare("INSERT OR IGNORE INTO room_members (code, user_id, joined_at) VALUES (?, ?, ?)")
-    .run(code, session.id, Date.now());
-  // 멤버 변동 → 기존 결정 무효화
-  db.prepare("UPDATE rooms SET decision = '' WHERE code = ?").run(code);
+  addMember(code, session.id);
+  clearDecision(code); // 멤버 변동 → 기존 결정 무효화
+  save();
 
-  const fresh = db.prepare("SELECT * FROM rooms WHERE code = ?").get(code);
-  sendJson(res, 200, buildRoomPayload(fresh, session.id));
+  sendJson(res, 200, buildRoomPayload(room, session.id));
 }
 
 // GET /api/rooms/:code — 방 멤버 목록 조회 (폴링용)
 function handleGetRoom(req, res, code) {
   const token = req.headers.authorization?.replace("Bearer ", "");
   const session = getSession(token);
-  const room = db.prepare("SELECT * FROM rooms WHERE code = ?").get(code.toUpperCase());
+  const room = findRoom(code.toUpperCase());
   if (!room) return sendJson(res, 404, { error: "방을 찾을 수 없습니다." });
   sendJson(res, 200, buildRoomPayload(room, session?.id ?? null));
 }
@@ -380,8 +329,9 @@ async function handleLeaveRoom(req, res) {
   try { body = await readBody(req); } catch { body = {}; }
   const code = (body.code ?? "").trim().toUpperCase();
   if (code) {
-    db.prepare("DELETE FROM room_members WHERE code = ? AND user_id = ?").run(code, session.id);
-    db.prepare("UPDATE rooms SET decision = '' WHERE code = ?").run(code);
+    db.roomMembers = db.roomMembers.filter((m) => !(m.code === code && m.user_id === session.id));
+    clearDecision(code);
+    save();
   }
   sendJson(res, 200, { ok: true });
 }
@@ -395,21 +345,24 @@ async function handleReady(req, res) {
   try { body = await readBody(req); } catch (e) { return sendJson(res, 400, { error: e.message }); }
 
   const code = (body.code ?? "").trim().toUpperCase();
-  const room = db.prepare("SELECT * FROM rooms WHERE code = ?").get(code);
+  const room = findRoom(code);
   if (!room) return sendJson(res, 404, { error: "방을 찾을 수 없습니다." });
 
   const ready = body.ready ? 1 : 0;
   const p = body.preference ?? {};
-  db.prepare(`
-    UPDATE room_members SET ready = ?, pref_menu = ?, pref_avoid = ?, pref_place = ?, pref_mood = ?
-    WHERE code = ? AND user_id = ?
-  `).run(ready, p.menu ?? "", p.avoid ?? "", p.place ?? "", p.mood ?? "", code, session.id);
+  const member = db.roomMembers.find((m) => m.code === code && m.user_id === session.id);
+  if (member) {
+    Object.assign(member, {
+      ready, pref_menu: p.menu ?? "", pref_avoid: p.avoid ?? "",
+      pref_place: p.place ?? "", pref_mood: p.mood ?? "",
+    });
+  }
 
   // 준비 취소 시 기존 결정 무효화
-  if (!ready) db.prepare("UPDATE rooms SET decision = '' WHERE code = ?").run(code);
+  if (!ready) clearDecision(code);
+  save();
 
-  const fresh = db.prepare("SELECT * FROM rooms WHERE code = ?").get(code);
-  sendJson(res, 200, buildRoomPayload(fresh, session.id));
+  sendJson(res, 200, buildRoomPayload(room, session.id));
 }
 
 // ── 시간 후보 계산 (서버) ──────────────────────────────────────────────────────
@@ -674,34 +627,39 @@ async function handleDecide(req, res) {
   try { body = await readBody(req); } catch (e) { return sendJson(res, 400, { error: e.message }); }
 
   const code = (body.code ?? "").trim().toUpperCase();
-  const room = db.prepare("SELECT * FROM rooms WHERE code = ?").get(code);
+  const room = findRoom(code);
   if (!room) return sendJson(res, 404, { error: "방을 찾을 수 없습니다." });
   if (room.host_id !== session.id) return sendJson(res, 403, { error: "주최자만 시간 선정을 할 수 있습니다." });
 
-  // 방장 본인 선호 저장
+  // 방장 본인 선호 저장 + 준비 처리
   const hp = body.preference ?? {};
-  db.prepare(`
-    UPDATE room_members SET ready = 1, pref_menu = ?, pref_avoid = ?, pref_place = ?, pref_mood = ?
-    WHERE code = ? AND user_id = ?
-  `).run(hp.menu ?? "", hp.avoid ?? "", hp.place ?? "", hp.mood ?? "", code, session.id);
+  const hostMember = db.roomMembers.find((m) => m.code === code && m.user_id === session.id);
+  if (hostMember) {
+    Object.assign(hostMember, {
+      ready: 1, pref_menu: hp.menu ?? "", pref_avoid: hp.avoid ?? "",
+      pref_place: hp.place ?? "", pref_mood: hp.mood ?? "",
+    });
+  }
 
-  // 전원 준비 확인
-  const rows = db.prepare(`
-    SELECT u.id, u.username, u.region, u.preferred_food, u.workplace,
-           m.ready, m.pref_menu, m.pref_avoid, m.pref_place, m.pref_mood
-    FROM room_members m JOIN users u ON u.id = m.user_id
-    WHERE m.code = ? ORDER BY m.joined_at
-  `).all(code);
+  // 멤버 + 사용자 정보 결합
+  const rows = roomMembersOf(code).map((m) => {
+    const u = findUserById(m.user_id) ?? { username: "(탈퇴)", region: "", preferred_food: "", workplace: "" };
+    return {
+      id: m.user_id, username: u.username, region: u.region,
+      preferred_food: u.preferred_food, workplace: u.workplace,
+      ready: m.ready, pref_menu: m.pref_menu, pref_avoid: m.pref_avoid,
+      pref_place: m.pref_place, pref_mood: m.pref_mood,
+    };
+  });
   const notReady = rows.filter((r) => !r.ready);
   if (notReady.length > 0) {
     return sendJson(res, 400, { error: `아직 준비되지 않은 참여자가 있습니다 (${notReady.map((r) => r.username).join(", ")})` });
   }
 
-  const getSchedules = db.prepare("SELECT * FROM schedules WHERE user_id = ?");
   const members = rows.map((r) => ({
     id: r.id, name: r.username, region: r.region,
     // 컨디션 리스크 판단용으로 title·category 포함 (서버 내부 계산, 외부 미노출)
-    schedules: getSchedules.all(r.id).map((s) => ({
+    schedules: schedulesOf(r.id).map((s) => ({
       date: s.date, endDate: s.end_date || s.date,
       start: s.start_hour, end: s.end_hour, repeat: s.repeat,
       title: s.title, category: s.category,
@@ -731,10 +689,10 @@ async function handleDecide(req, res) {
   }
 
   const decision = { candidates, availabilityRows, recommendation, recSource, decidedAt: Date.now() };
-  db.prepare("UPDATE rooms SET decision = ? WHERE code = ?").run(JSON.stringify(decision), code);
+  room.decision = JSON.stringify(decision);
+  save();
 
-  const fresh = db.prepare("SELECT * FROM rooms WHERE code = ?").get(code);
-  sendJson(res, 200, buildRoomPayload(fresh, session.id));
+  sendJson(res, 200, buildRoomPayload(room, session.id));
 }
 
 function handleLogout(req, res) {

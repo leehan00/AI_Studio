@@ -52,8 +52,8 @@ http://127.0.0.1:4173
 
 `OPENAI_API_KEY`가 없어도 앱은 정상 실행되며, 장소·메뉴 추천은 서버 내장 규칙 엔진(로컬 추천)으로 동작합니다.
 
-- **Node 버전**: 18 또는 20 (LTS) 권장
-- 데이터는 `openplanner.db`(SQLite)에 저장됩니다. 테스트 계정·일정이 이미 들어 있습니다.
+- **Node 버전**: 18 이상이면 어디서나 동작 (네이티브 빌드 의존성 없음)
+- 데이터는 `openplanner.json` 한 파일에 저장됩니다. 테스트 계정·일정이 이미 들어 있습니다.
 
 ---
 
@@ -76,5 +76,6 @@ http://127.0.0.1:4173
 
 - 프론트엔드: HTML / CSS / Vanilla JS
 - 백엔드: Node.js (외부 웹 프레임워크 없이 http 모듈)
-- DB: SQLite (better-sqlite3)
+- 저장소: 순수 JS 파일 저장소(JSON) — 네이티브 빌드 의존성 없이 어디서나 실행
+- 인증: bcryptjs (순수 JS 해싱)
 - AI: OpenAI API (미설정 시 내장 규칙 엔진 fallback)
