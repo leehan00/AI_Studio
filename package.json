@@ -1,0 +1,13 @@
+{
+  "name": "openplanner",
+  "version": "1.0.0",
+  "description": "AI 기반 약속 의사결정 플래너",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.0.0"
+  }
+}

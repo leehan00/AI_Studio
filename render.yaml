@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: openplanner
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # OPENAI_API_KEY를 넣으면 LLM 추천, 없으면 내장 규칙 추천으로 동작
+      # - key: OPENAI_API_KEY
+      #   sync: false

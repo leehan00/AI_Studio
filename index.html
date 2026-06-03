@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenPlanner</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section id="loginScreen" class="login-screen">
+        <div class="login-panel">
+          <span class="brand-mark large">OP</span>
+          <p class="eyebrow">OpenPlanner</p>
+          <h1>약속을 직접 결정하는 AI 플래너</h1>
+
+          <div class="auth-tabs" role="tablist">
+            <button id="tabLogin" class="auth-tab active" type="button" role="tab" aria-selected="true">로그인</button>
+            <button id="tabRegister" class="auth-tab" type="button" role="tab" aria-selected="false">회원가입</button>
+          </div>
+
+          <p id="authError" class="auth-error hidden" role="alert"></p>
+
+          <form id="loginForm" class="login-form">
+            <label>
+              이름 (아이디)
+              <input id="loginId" type="text" placeholder="예: 윤이한" autocomplete="username" required />
+            </label>
+            <label>
+              비밀번호
+              <input id="loginPassword" type="password" placeholder="비밀번호 입력" autocomplete="current-password" required />
+            </label>
+            <button class="primary-action" type="submit">로그인</button>
+          </form>
+
+          <form id="registerForm" class="login-form hidden">
+            <label>
+              이름 (아이디)
+              <input id="registerId" type="text" placeholder="예: 윤이한" autocomplete="username" required />
+            </label>
+            <label>
+              비밀번호
+              <input id="registerPassword" type="password" placeholder="6자 이상" autocomplete="new-password" required />
+            </label>
+            <label>
+              비밀번호 확인
+              <input id="registerPasswordConfirm" type="password" placeholder="비밀번호 재입력" autocomplete="new-password" required />
+            </label>
+            <button class="primary-action" type="submit">회원가입 →</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- 프로필 설정 화면 (회원가입 직후) -->
+      <section id="profileScreen" class="login-screen hidden">
+        <div class="login-panel profile-panel">
+          <span class="brand-mark large">OP</span>
+          <p class="eyebrow">프로필 설정</p>
+          <h1>AI에게 나를 소개해요</h1>
+          <p class="profile-desc">입력한 정보는 모임 시간·장소 추천에 활용됩니다.<br>나중에 언제든 수정할 수 있어요.</p>
+          <form id="profileForm" class="login-form">
+            <label>
+              거주 지역 *
+              <input id="profileRegion" type="text" placeholder="예: 서울 성북구" required />
+            </label>
+            <label>
+              선호 음식
+              <input id="profileFood" type="text" placeholder="예: 일식, 파스타, 고기" />
+            </label>
+            <label>
+              직장 / 학교 위치
+              <input id="profileWorkplace" type="text" placeholder="예: 강남역, 건국대학교" />
+            </label>
+            <button class="primary-action" type="submit">저장하고 시작하기 →</button>
+            <button id="profileSkipBtn" class="secondary-action" type="button">나중에 입력하기</button>
+          </form>
+        </div>
+      </section>
+
+      <section id="appScreen" class="app-view hidden">
+        <aside class="sidebar">
+          <div class="brand">
+            <span class="brand-mark">OP</span>
+            <div>
+              <h1>OpenPlanner</h1>
+              <p id="signedInUser">로그인 대기</p>
+            </div>
+          </div>
+
+          <nav class="nav-list" aria-label="주요 화면">
+            <button class="nav-item active" type="button" data-view="calendar">내 캘린더</button>
+            <button class="nav-item" type="button" data-view="room">이날 어때</button>
+          </nav>
+
+          <section class="meeting-summary" aria-label="약속 요약">
+            <span class="label">초대 코드</span>
+            <strong id="inviteCode">방 없음</strong>
+            <span class="label">참여자</span>
+            <strong id="memberCount">0명</strong>
+            <span class="label">결정 상태</span>
+            <strong id="decisionStatus">방 생성 전</strong>
+          </section>
+        </aside>
+
+        <section class="workspace">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">Final Project MVP</p>
+              <h2 id="viewTitle">내 캘린더</h2>
+            </div>
+            <button id="logoutButton" class="secondary-action" type="button">로그아웃</button>
+          </header>
+
+          <section id="calendarView" class="view-stack">
+            <!-- 월간 캘린더 -->
+            <section class="panel padded">
+              <div class="section-heading">
+                <div>
+                  <h3>2026년 6월</h3>
+                  <p>날짜를 눌러 일정을 추가하거나 확인하세요</p>
+                </div>
+              </div>
+              <div id="calendarGrid" class="calendar-grid" aria-label="월간 캘린더"></div>
+            </section>
+
+            <!-- 시간표 -->
+            <section class="panel padded timetable-section">
+              <div class="section-heading">
+                <div>
+                  <h3>시간표</h3>
+                  <p>매주 반복 수업을 등록하면 약속 잡을 때 자동 반영됩니다</p>
+                </div>
+                <button id="addClassBtn" class="secondary-action" type="button">+ 수업 추가</button>
+              </div>
+              <div class="timetable-wrap">
+                <div id="timetableGrid" class="timetable-grid"></div>
+              </div>
+            </section>
+          </section>
+
+          <!-- 일정 팝업 (목록 + 추가/수정 폼) -->
+          <div id="calendarPopup" class="cal-popup-overlay hidden" role="dialog" aria-modal="true">
+            <div class="cal-popup">
+              <div class="cal-popup-header">
+                <button id="popupBackBtn" class="popup-back-btn hidden" type="button">← 목록</button>
+                <h3 id="calendarPopupDate">날짜</h3>
+                <button id="calendarPopupClose" class="cal-popup-close" type="button" aria-label="닫기">×</button>
+              </div>
+
+              <!-- 목록 뷰 -->
+              <div id="popupListView">
+                <div id="calendarPopupList" class="cal-popup-list"></div>
+                <button id="calendarPopupAddBtn" class="cal-popup-add-btn" type="button">+ 일정 추가</button>
+              </div>
+
+              <!-- 폼 뷰 -->
+              <div id="popupFormView" class="hidden">
+                <form id="popupScheduleForm" class="popup-form">
+                  <label>일정명
+                    <input id="popupTitle" type="text" placeholder="예: 알고리즘 수업" required />
+                  </label>
+                  <div class="popup-row">
+                    <label>시작<input id="popupStart" type="time" value="09:00" /></label>
+                    <label>종료<input id="popupEnd" type="time" value="11:00" /></label>
+                  </div>
+                  <label>카테고리
+                    <select id="popupCategory">
+                      <option value="수업">🎓 수업</option>
+                      <option value="알바">💼 알바</option>
+                      <option value="약속">🎉 약속</option>
+                      <option value="운동">💪 운동</option>
+                      <option value="개인">🔵 개인</option>
+                      <option value="기타">⚙️ 기타</option>
+                    </select>
+                  </label>
+                  <div class="popup-row">
+                    <label>종료일 (기간 설정)<input id="popupEndDate" type="date" /></label>
+                    <label>반복
+                      <select id="popupRepeat">
+                        <option value="none">없음</option>
+                        <option value="weekly">매주 반복</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label class="check-field">
+                    <input id="popupPrivate" type="checkbox" /> 비공개
+                  </label>
+                  <div class="popup-form-footer">
+                    <button class="secondary-action" type="button" id="popupCancelBtn">취소</button>
+                    <button class="primary-action" type="submit" id="popupSubmitBtn">일정 추가</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+
+          <!-- 수업 추가 팝업 -->
+          <div id="classPopup" class="cal-popup-overlay hidden" role="dialog" aria-modal="true">
+            <div class="cal-popup">
+              <div class="cal-popup-header">
+                <h3>수업 추가</h3>
+                <button id="classPopupClose" class="cal-popup-close" type="button">×</button>
+              </div>
+              <form id="classForm" class="popup-form">
+                <label>과목명<input id="classSubject" type="text" placeholder="예: 알고리즘" required /></label>
+                <div class="popup-row">
+                  <label>요일
+                    <select id="classDay">
+                      <option value="1">월요일</option>
+                      <option value="2">화요일</option>
+                      <option value="3">수요일</option>
+                      <option value="4">목요일</option>
+                      <option value="5">금요일</option>
+                      <option value="6">토요일</option>
+                    </select>
+                  </label>
+                  <label>색상
+                    <select id="classColor">
+                      <option value="blue">🔵 파랑</option>
+                      <option value="green">🟢 초록</option>
+                      <option value="red">🔴 빨강</option>
+                      <option value="amber">🟡 주황</option>
+                      <option value="purple">🟣 보라</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="popup-row">
+                  <label>시작<input id="classStart" type="time" value="09:00" /></label>
+                  <label>종료<input id="classEnd" type="time" value="11:00" /></label>
+                </div>
+                <label>강의실 (선택)<input id="classRoom" type="text" placeholder="예: 공학관 101호" /></label>
+                <div class="popup-form-footer">
+                  <button class="secondary-action" type="button" id="classPopupCancelBtn">취소</button>
+                  <button class="primary-action" type="submit">추가</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <section id="roomView" class="view-stack hidden">
+
+            <!-- 방 없을 때: 진입 화면 -->
+            <div id="roomEntry" class="room-entry">
+              <div class="entry-option panel">
+                <div class="entry-icon">✨</div>
+                <h3>새 '약속' 만들기</h3>
+                <p>모임 이름을 정하고 초대코드를 받으세요</p>
+                <label class="field">
+                  모임 이름
+                  <input id="roomName" type="text" placeholder="예: 고등학교 친구 저녁 모임" />
+                </label>
+                <button id="createRoom" class="primary-action entry-btn" type="button">방 만들기 →</button>
+              </div>
+
+              <div class="entry-or"><span>또는</span></div>
+
+              <div class="entry-option panel">
+                <div class="entry-icon">🔑</div>
+                <h3>초대코드로 입장</h3>
+                <p>친구가 보낸 코드를 입력하면 내 계정으로 입장합니다</p>
+                <label class="field">
+                  초대코드
+                  <input id="joinCode" type="text" placeholder="예: OP-A3F2B1C0" />
+                </label>
+                <p id="joinError" class="join-error hidden"></p>
+                <button id="joinRoom" class="secondary-action entry-btn" type="button">입장하기 →</button>
+              </div>
+            </div>
+
+            <!-- 방 생성 후: 활성 화면 -->
+            <div id="roomActive" class="room-active hidden">
+
+              <!-- 방 헤더 -->
+              <div class="room-header panel">
+                <div class="room-header-top">
+                  <button id="leaveRoomBtn" class="room-back-btn" type="button">← 방 나가기</button>
+                  <h3 id="roomTitle">이날 어때</h3>
+                  <span id="roomStatusBadge" class="status-badge">참여 대기</span>
+                </div>
+                <div class="invite-bar">
+                  <span class="invite-label">초대코드</span>
+                  <code id="roomInviteCode" class="invite-code">–</code>
+                  <button id="copyCodeBtn" class="copy-btn" type="button">복사</button>
+                  <span id="copyToast" class="copy-toast hidden">✓ 복사됨</span>
+                </div>
+              </div>
+
+              <!-- 참여자 -->
+              <div class="panel padded">
+                <div class="section-heading">
+                  <div>
+                    <h3>참여자</h3>
+                    <p>참여자를 추가하고 각자의 선호를 입력하세요</p>
+                  </div>
+                  <span id="roomMemberBadge" class="member-count-badge">0명</span>
+                </div>
+                <div id="participantList" class="member-strip"></div>
+              </div>
+
+              <!-- 모임 선호 입력 + 준비 완료 -->
+              <div class="panel padded">
+                <div class="section-heading">
+                  <div>
+                    <h3>🍽️ 모임 선호 입력</h3>
+                    <p>본인의 선호만 표시됩니다 · 입력 후 준비 완료를 눌러주세요</p>
+                  </div>
+                </div>
+                <div id="preferenceList" class="preference-grid"></div>
+                <button id="readyBtn" class="ready-btn" type="button">준비 완료</button>
+              </div>
+
+              <!-- AI 섹션 (주최자 전용) -->
+              <div id="aiSection" class="panel padded ai-section hidden">
+                <div class="ai-section-head">
+                  <div>
+                    <h3>만날 기간 설정</h3>
+                    <p>이 기간 안에서 AI가 모두 가능한 시간을 찾습니다 · 평일 18시 이후, 주말 12시 이후</p>
+                  </div>
+                </div>
+                <div class="range-row">
+                  <label class="field">
+                    시작일
+                    <input id="rangeStart" type="date" value="2026-06-10" />
+                  </label>
+                  <div class="range-dash">—</div>
+                  <label class="field">
+                    종료일
+                    <input id="rangeEnd" type="date" value="2026-06-17" />
+                  </label>
+                </div>
+                <p id="readyStatus" class="ready-status">참여자 준비 상태: 0/0</p>
+                <button id="runDecision" class="ai-cta-btn" type="button" disabled>
+                  <span>✨</span>
+                  <span>AI 시간 선정</span>
+                  <span>→</span>
+                </button>
+              </div>
+
+              <!-- 참여자 안내 (참여자 전용) -->
+              <div id="waitingNotice" class="panel padded waiting-notice hidden">
+                <p>✅ 준비를 완료했습니다. 주최자가 AI 시간 선정을 누르면 결과가 나타납니다.</p>
+              </div>
+
+              <!-- AI 결과 (시간 선정 후 표시) -->
+              <div id="decisionResults" class="room-active hidden">
+
+                <section class="panel padded shared-result">
+                  <div class="section-heading">
+                    <div>
+                      <h3>AI 선정 결과</h3>
+                      <p>모든 참여자가 가능한 최적 시간입니다</p>
+                    </div>
+                    <span id="sharedBadge" class="live-badge">대기 중</span>
+                  </div>
+                  <div id="recommendedSlot" class="recommended-slot empty-state">
+                    AI 시간 선정을 누르면 결과가 여기 표시됩니다.
+                  </div>
+                </section>
+
+                <section class="panel padded ai-recommendation">
+                  <div class="section-heading">
+                    <div>
+                      <h3>AI 메뉴·장소 추천</h3>
+                      <p>참여자 선호를 취합한 모임 조건입니다</p>
+                    </div>
+                    <span id="aiModeBadge" class="live-badge">대기 중</span>
+                  </div>
+                  <div id="recommendationResult" class="recommendation-result empty-state">
+                    시간 선정 후 추천이 표시됩니다.
+                  </div>
+                </section>
+
+                <section class="decision-grid">
+                  <article class="panel">
+                    <div class="panel-head">
+                      <span class="step">1</span>
+                      <div>
+                        <h3>가능 시간 보드</h3>
+                        <p>초록 = 전원 가능, 회색 = 충돌</p>
+                      </div>
+                    </div>
+                    <div id="availabilityBoard" class="availability-board empty-state">AI 시간 선정 전입니다.</div>
+                  </article>
+                  <article class="panel">
+                    <div class="panel-head">
+                      <span class="step">2</span>
+                      <div>
+                        <h3>후보 시간 순위</h3>
+                        <p>전원 가능한 시간을 점수순으로 정렬합니다</p>
+                      </div>
+                    </div>
+                    <div id="timeResults" class="result-list empty-state">AI 시간 선정 전입니다.</div>
+                  </article>
+                </section>
+
+              </div>
+
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="./script.js"></script>
+  </body>
+</html>
